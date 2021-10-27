@@ -8,7 +8,7 @@ const {NotFound} = require('http-errors');
 const {NoDatasetPathError, InvalidSourceImplementation} = require("./exceptions");
 const utils = require("./utils");
 
-const S3 = new AWS.S3();
+const S3 = new AWS.S3({signatureVersion: "v4"});
 
 /* These Source, Dataset, and Narrative classes contain information to map an
  * array of dataset/narrative path parts onto a URL.  Source selection and
@@ -28,6 +28,9 @@ class Source {
   }
   async baseUrl() {
     throw new InvalidSourceImplementation("async baseUrl() must be implemented by subclasses");
+  }
+  get supportsCors() {
+    return false;
   }
   static isGroup() { /* is the source a "nextstrain group"? */
     return false;
@@ -190,6 +193,7 @@ class CoreSource extends Source {
   async baseUrl() { return "http://data.nextstrain.org/"; }
   get repo() { return "nextstrain/narratives"; }
   get branch() { return "master"; }
+  get supportsCors() { return true; }
 
   narrative(pathParts) {
     return new CoreNarrative(this, pathParts);
@@ -579,7 +583,16 @@ class PrivateS3Source extends S3Source {
 
 class PrivateS3Dataset extends Dataset {
   async urlFor(type, method = 'GET') {
-    return S3.getSignedUrl(method === "HEAD" ? "headObject" : "getObject", {
+    const action = {
+      "GET": "getObject",
+      "HEAD": "headObject",
+      "PUT": "putObject",
+      "DELETE": "deleteObject",
+    };
+
+    if (!action[method]) throw `Unsupported method: ${method}`
+
+    return S3.getSignedUrl(action[method], {
       Bucket: this.source.bucket,
       Key: this.baseNameFor(type)
     });
@@ -588,7 +601,16 @@ class PrivateS3Dataset extends Dataset {
 
 class PrivateS3Narrative extends Narrative {
   async url(method = 'GET') {
-    return S3.getSignedUrl(method === "HEAD" ? "headObject" : "getObject", {
+    const action = {
+      "GET": "getObject",
+      "HEAD": "headObject",
+      "PUT": "putObject",
+      "DELETE": "deleteObject",
+    };
+
+    if (!action[method]) throw `Unsupported method: ${method}`
+
+    return S3.getSignedUrl(action[method], {
       Bucket: this.source.bucket,
       Key: this.baseName
     });

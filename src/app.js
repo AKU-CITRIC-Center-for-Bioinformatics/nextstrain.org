@@ -14,12 +14,15 @@ const production = process.env.NODE_ENV === "production";
 
 const charon = require("./endpoints/charon");
 const users = require("./endpoints/users");
-const {assetPath, auspiceAssetPath, gatsbyAssetPath, sendAuspiceEntrypoint, sendGatsbyEntrypoint, sendGatsbyPage, sendGatsby404} = require("./endpoints/static");
-const {setSource, setGroupSource, setDataset, setNarrative, canonicalizeDataset, ifDatasetExists, ifNarrativeExists} = require("./endpoints/sources");
+const {getGroup} = require("./endpoints/groups");
+const {assetPath, auspiceAssetPath, gatsbyAssetPath, sendGatsbyPage, sendGatsby404} = require("./endpoints/static");
+const {setSource, setGroupSource, setDataset, setNarrative, canonicalizeDataset, getDataset, getDatasetMain, getDatasetRootSequence, getDatasetTipFrequencies, getNarrative, getNarrativeMarkdown, putDataset, putDatasetMain} = require("./endpoints/sources");
 const authn = require("./authn");
 const redirects = require("./redirects");
 
 const esc = encodeURIComponent;
+
+const jsonMediaType = type => type.match(/^application\/(.+\+)?json$/);
 
 
 /* Express boilerplate.
@@ -119,12 +122,12 @@ app.use([coreBuildRoutes, "/narratives/*"], setSource("core"));
 
 app.routeAsync(coreBuildRoutes)
   .all(setDataset(req => req.path), canonicalizeDataset(path => `/${path}`))
-  .getAsync(ifDatasetExists, sendAuspiceEntrypoint)
+  .getAsync(getDataset)
 ;
 
 app.routeAsync("/narratives/*")
   .all(setNarrative(req => req.params[0]))
-  .getAsync(ifNarrativeExists, sendAuspiceEntrypoint)
+  .getAsync(getNarrative)
 ;
 
 
@@ -141,12 +144,12 @@ app.routeAsync("/staging/narratives")
 
 app.routeAsync("/staging/narratives/*")
   .all(setNarrative(req => req.params[0]))
-  .getAsync(ifNarrativeExists, sendAuspiceEntrypoint)
+  .getAsync(getNarrative)
 ;
 
 app.routeAsync("/staging/*")
   .all(setDataset(req => req.params[0]), canonicalizeDataset(path => `/staging/${path}`))
-  .getAsync(ifDatasetExists, sendAuspiceEntrypoint)
+  .getAsync(getDataset)
 ;
 
 
@@ -169,12 +172,12 @@ app.use(["/community/narratives/:user/:repo", "/community/:user/:repo"],
  */
 app.routeAsync(["/community/narratives/:user/:repo", "/community/narratives/:user/:repo/*"])
   .all(setNarrative(req => req.params[0]))
-  .getAsync(ifNarrativeExists, sendAuspiceEntrypoint)
+  .getAsync(getNarrative)
 ;
 
 app.routeAsync(["/community/:user/:repo", "/community/:user/:repo/*"])
   .all(setDataset(req => req.params[0]))
-  .getAsync(ifDatasetExists, sendAuspiceEntrypoint)
+  .getAsync(getDataset)
 ;
 
 
@@ -187,14 +190,14 @@ app.routeAsync("/fetch/narratives/:authority/*")
   .all(setNarrative(req => req.params[0]))
 
   // Assume existence; little benefit to checking when we don't have a fallback page.
-  .getAsync(sendAuspiceEntrypoint)
+  .getAsync(getNarrative)
 ;
 
 app.routeAsync("/fetch/:authority/*")
   .all(setDataset(req => req.params[0]))
 
   // Assume existence; little benefit to checking when we don't have a fallback page.
-  .getAsync(sendAuspiceEntrypoint)
+  .getAsync(getDataset)
 ;
 
 
@@ -212,24 +215,43 @@ app.routeAsync("/fetch/:authority/*")
 app.use("/groups/:groupName", setGroupSource(req => req.params.groupName));
 
 app.routeAsync("/groups/:groupName")
-  /* sendGatsbyPage("groups/:groupName/index.html") should work, but it
-   * renders wrong for some reason that's not clear.
-   */
-  .getAsync(sendGatsbyEntrypoint)
+  .getAsync(getGroup)
 ;
 
 // Avoid matching "narratives" as a dataset name.
 app.routeAsync("/groups/:groupName/narratives")
   .getAsync((req, res) => res.redirect(`/groups/${esc(req.params.groupName)}`));
 
+app.routeAsync("/groups/:groupName/narratives/*.md")
+  .all(setNarrative(req => req.params[0]))
+  .getAsync(getNarrativeMarkdown)
+;
+
 app.routeAsync("/groups/:groupName/narratives/*")
   .all(setNarrative(req => req.params[0]))
-  .getAsync(ifNarrativeExists, sendAuspiceEntrypoint)
+  .getAsync(getNarrative)
+;
+
+app.routeAsync("/groups/:groupName/*_root-sequence.json")
+  .all(setDataset(req => req.params[0]))
+  .getAsync(getDatasetRootSequence)
+;
+
+app.routeAsync("/groups/:groupName/*_tip-frequencies.json")
+  .all(setDataset(req => req.params[0]))
+  .getAsync(getDatasetTipFrequencies)
+;
+
+app.routeAsync("/groups/:groupName/*.json")
+  .all(setDataset(req => req.params[0]))
+  .getAsync(getDatasetMain)
+  .putAsync(putDatasetMain)
 ;
 
 app.routeAsync("/groups/:groupName/*")
   .all(setDataset(req => req.params[0]))
-  .getAsync(ifDatasetExists, sendAuspiceEntrypoint)
+  .getAsync(getDataset)
+  .putAsync(putDataset)
 ;
 
 
@@ -301,6 +323,15 @@ app.useAsync(async (err, req, res, next) => {
   if (res.headersSent) {
     utils.verbose("Headers already sent; using Express' default error handler");
     return next(err);
+  }
+
+  res.vary("Accept");
+
+  if (req.accepts().some(jsonMediaType) && !req.accepts("html")) {
+    utils.verbose(`Sending ${err} error as JSON`);
+    return res.status(err.status || err.statusCode || 500)
+      .json({ error: err.message || String(err) })
+      .end();
   }
 
   if (err instanceof NotFound) {
