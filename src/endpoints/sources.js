@@ -134,9 +134,9 @@ const ifDatasetExists = async (req, res, next) => {
  * @param 
  * @returns {asyncExpressHandler}
  */
-const sendDatasetSubresource = type => async (req, res) => {
-  const dataset = req.context.dataset;
-  const subresourceUrl = await dataset.urlFor(type);
+const sendResource = resourceExtractor => async (req, res) => {
+  const resource = resourceExtractor(req);
+  const resourceUrl = await resource.url();
 
   // XXX FIXME: for main, handle only meta + tree existing and combining them?
 
@@ -153,8 +153,8 @@ const sendDatasetSubresource = type => async (req, res) => {
    * tip the balance in favor of always proxying.
    *   -trs, 9 Nov 2021
    */
-  if (dataset.source.supportsCors) {
-    return res.redirect(subresourceUrl);
+  if (resource.supportsCors) {
+    return res.redirect(resourceUrl);
   }
 
   /* Without upstream CORS support, we need to proxy the data through us:
@@ -165,17 +165,17 @@ const sendDatasetSubresource = type => async (req, res) => {
    * re-transferring the content if we have a cached copy that matches
    * upstream.
    */
-  return await proxyFetch(res, new Request(subresourceUrl, {
+  return await proxyFetch(res, new Request(resourceUrl, {
     headers: {
-      Accept: [
-        `application/vnd.nextstrain.${type}+json`,
-        "application/json; q=0.9",
-        "text/plain; q=0.1",
-      ].join(", ")
+      Accept: resource.accept,
     },
     cache: "no-cache",
   }));
 }
+
+
+const sendDatasetSubresource = type =>
+  sendResource(req => req.context.dataset.subresource(type));
 
 
 const getDatasetSubresource = type => contentTypesProvided([
@@ -273,25 +273,11 @@ const ifNarrativeExists = async (req, res, next) => {
  * @param 
  * @returns {asyncExpressHandler}
  */
-const getNarrativeMarkdown = async (req, res) => {
-  const narrative = req.context.narrative;
-  const narrativeUrl = await narrative.url();
+const sendNarrativeSubresource = type =>
+  sendResource(req => req.context.narrative.subresource(type));
 
-  // XXX FIXME comments from getDatasetSubresource
-  if (narrative.source.supportsCors) {
-    return res.redirect(narrativeUrl);
-  }
 
-  return await proxyFetch(res, new Request(narrativeUrl, {
-    headers: {
-      Accept: [
-        "text/markdown",
-        "text/*; q=0.1",
-      ].join(", ")
-    },
-    cache: "no-cache",
-  }));
-}
+const getNarrativeMarkdown = sendNarrativeSubresource("md");
 
 
 const getNarrative = contentTypesProvided([
