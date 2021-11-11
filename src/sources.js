@@ -15,8 +15,8 @@ const S3 = new AWS.S3({signatureVersion: "v4"});
  * dataset path aliasing (/flu → /flu/seasonal/h3n2/ha/3y) is handled in
  * utils/prefix.parsePrefix().
  *
- * The class definitions would be a bit shorter/prettier if we were using Babel
- * to allow class properties on Node.
+ * XXX FIXME now thanks to node upgrade: The class definitions would be a bit
+ * shorter/prettier if we were using Babel to allow class properties on Node.
  */
 
 class Source {
@@ -105,6 +105,12 @@ class Resource {
 
 class SubResource {
   constructor(resource, type) {
+    if (this.constructor === SubResource) {
+      throw "SubResource interface class must be subclassed"
+    }
+    if (!(resource instanceof Resource)) {
+      throw `invalid SubResource parent resource type: ${resource.constructor}`;
+    }
     if (!this.constructor.validTypes.includes(type)) {
       throw `invalid SubResource type: ${type}`;
     }
@@ -129,43 +135,33 @@ class SubResource {
 }
 
 class DatasetSubResource extends SubResource {
-  static get validTypes() {
-    return ["main", "root-sequence", "tip-frequencies", "meta", "tree"];
-  }
-  get baseName() {
-    return this.type === "main"
-      ? `${this.resource.baseName}.json`
-      : `${this.resource.baseName}_${this.type}.json`;
-  }
-  get mediaType() {
-    return `application/vnd.nextstrain.${this.type}+json`;
-  }
-  get accept() {
-    return [
-      this.mediaType,
-      "application/json; q=0.9",
-      "text/plain; q=0.1",
-    ].join(", ")
-  }
+  static validTypes = ["main", "root-sequence", "tip-frequencies", "meta", "tree"];
+
+  baseName = this.type === "main"
+    ? `${this.resource.baseName}.json`
+    : `${this.resource.baseName}_${this.type}.json`;
+
+  mediaType = `application/vnd.nextstrain.${this.type}+json`;
+
+  accept = [
+    this.mediaType,
+    "application/json; q=0.9",
+    "text/plain; q=0.1",
+  ].join(", ")
 }
 
 class NarrativeSubResource extends SubResource {
-  static get validTypes() {
-    return ["md"];
-  }
-  get baseName() {
-    return `${this.resource.baseName}.md`;
-  }
-  get mediaType() {
-    return "text/vnd.nextstrain.narrative+markdown";
-  }
-  get accept() {
-    return [
-      this.mediaType,
-      "text/markdown; q=0.9",
-      "text/*; q=0.1",
-    ].join(", ")
-  }
+  static validTypes = ["md"];
+
+  baseName = `${this.resource.baseName}.md`;
+
+  mediaType = "text/vnd.nextstrain.narrative+markdown";
+
+  accept = [
+    this.mediaType,
+    "text/markdown; q=0.9",
+    "text/*; q=0.1",
+  ].join(", ")
 }
 
 class Dataset extends Resource {
