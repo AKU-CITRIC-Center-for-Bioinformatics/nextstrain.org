@@ -5,7 +5,7 @@ const yamlFront = require("yaml-front-matter");
 const {fetch} = require("./fetch");
 const queryString = require("query-string");
 const {NotFound} = require('http-errors');
-const {NoDatasetPathError, InvalidSourceImplementation} = require("./exceptions");
+const {NoResourcePathError} = require("./exceptions");
 const utils = require("./utils");
 
 const S3 = new AWS.S3({signatureVersion: "v4"});
@@ -21,13 +21,17 @@ const S3 = new AWS.S3({signatureVersion: "v4"});
 
 class Source {
   static get _name() {
-    throw new InvalidSourceImplementation("_name() must be implemented by subclasses");
+    throw "_name() must be implemented by subclasses";
   }
   get name() {
     return this.constructor._name;
   }
   async baseUrl() {
-    throw new InvalidSourceImplementation("async baseUrl() must be implemented by subclasses");
+    throw "async baseUrl() must be implemented by subclasses";
+  }
+  async urlFor(path, method = 'GET') { // eslint-disable-line no-unused-vars
+    const url = new URL(path, await this.baseUrl());
+    return url.toString();
   }
   get supportsCors() {
     return false;
@@ -69,39 +73,106 @@ class Source {
   }
 
   async getInfo() {
-    throw new InvalidSourceImplementation("getInfo() must be implemented by subclasses");
+    throw "getInfo() must be implemented by subclasses";
   }
 }
 
-class Dataset {
+class Resource {
   constructor(source, pathParts) {
     this.source = source;
     this.pathParts = pathParts;
 
-    // Require baseParts, otherwise we have no actual dataset path.  This
-    // inspects baseParts because some of the pathParts (above) may not apply,
-    // which each Dataset subclass determines for itself.
+    // Require baseParts, otherwise we have no actual dataset/narrative path.
+    // This inspects baseParts because some of the pathParts (above) may not
+    // apply, which each Dataset/Narrative subclass determines for itself.
     if (!this.baseParts.length) {
-      throw new NoDatasetPathError();
+      throw new NoResourcePathError();
     }
   }
   get baseParts() {
     return this.pathParts.slice();
   }
-  baseNameFor(type) {
-    const baseName = this.baseParts.join("_");
-    return type === "main"
-      ? `${baseName}.json`
-      : `${baseName}_${type}.json`;
+  get baseName() {
+    return this.baseParts.join("_");
   }
-  async urlFor(type, method = 'GET') { // eslint-disable-line no-unused-vars
-    const url = new URL(this.baseNameFor(type), await this.source.baseUrl());
-    return url.toString();
+  async exists() {
+    throw "exists() must be implemented by Resource subclasses";
   }
+  subresource(type) {
+    throw "subresource() must be implemented by Resource subclasses";
+  }
+}
+
+class SubResource {
+  constructor(resource, type) {
+    if (!this.constructor.validTypes.includes(type)) {
+      throw `invalid SubResource type: ${type}`;
+    }
+    this.resource = resource;
+    this.type = type;
+  }
+  static get validTypes() {
+    throw "validTypes() must be implemented by SubResource subclasses";
+  }
+  async url(method = 'GET') {
+    return await this.resource.source.urlFor(this.baseName, method);
+  }
+  get baseName() {
+    throw "baseName() must be implemented by SubResource subclasses";
+  }
+  get mediaType() {
+    throw "mediaType() must be implemented by SubResource subclasses";
+  }
+  get accept() {
+    return this.mediaType;
+  }
+}
+
+class DatasetSubResource extends SubResource {
+  static get validTypes() {
+    return ["main", "root-sequence", "tip-frequencies", "meta", "tree"];
+  }
+  get baseName() {
+    return this.type === "main"
+      ? `${this.resource.baseName}.json`
+      : `${this.resource.baseName}_${this.type}.json`;
+  }
+  get mediaType() {
+    return `application/vnd.nextstrain.${this.type}+json`;
+  }
+  get accept() {
+    return [
+      this.mediaType,
+      "application/json; q=0.9",
+      "text/plain; q=0.1",
+    ].join(", ")
+  }
+}
+
+class NarrativeSubResource extends SubResource {
+  static get validTypes() {
+    return ["md"];
+  }
+  get baseName() {
+    return `${this.resource.baseName}.md`;
+  }
+  get mediaType() {
+    return "text/vnd.nextstrain.narrative+markdown";
+  }
+  get accept() {
+    return [
+      this.mediaType,
+      "text/markdown; q=0.9",
+      "text/*; q=0.1",
+    ].join(", ")
+  }
+}
+
+class Dataset extends Resource {
   async exists() {
     const method = "HEAD";
     const _exists = async (type) =>
-      (await fetch(await this.urlFor(type, method), {method, cache: "no-store"})).status === 200;
+      (await fetch(await this.subresource(type).url(method), {method, cache: "no-store"})).status === 200;
 
     const all = async (...promises) =>
       (await Promise.all(promises)).every(x => x);
@@ -129,7 +200,7 @@ class Dataset {
      * breaking encapsulation by using a process-wide global.
      *   -trs, 26 Oct 2021 (based on a similar comment 5 Sept 2019)
      */
-    const sourceName = this.source.name;
+    const sourceName = this.source.type;
     const prefixParts = this.pathParts;
 
     if (!global.availableDatasets[sourceName]) {
@@ -161,30 +232,23 @@ class Dataset {
   get isRequestValidWithoutDataset() {
     return false;
   }
+
+  subresource(type) {
+    return new DatasetSubResource(this, type);
+  }
 }
 
-class Narrative {
-  constructor(source, pathParts) {
-    this.source = source;
-    this.pathParts = pathParts;
-  }
-  get baseParts() {
-    return this.pathParts.slice();
-  }
-  get baseName() {
-    const baseName = this.baseParts.join("_");
-    return `${baseName}.md`;
-  }
-  async url(method = 'GET') { // eslint-disable-line no-unused-vars
-    const url = new URL(this.baseName, await this.source.baseUrl());
-    return url.toString();
-  }
+class Narrative extends Resource {
   async exists() {
     const method = "HEAD";
     const _exists = async () =>
-      (await fetch(await this.url(method), {method, cache: "no-store"})).status === 200;
+      (await fetch(await this.subresource("md").url(method), {method, cache: "no-store"})).status === 200;
 
     return (await _exists()) || false;
+  }
+
+  subresource(type) {
+    return new NarrativeSubResource(this, type);
   }
 }
 
@@ -195,8 +259,13 @@ class CoreSource extends Source {
   get branch() { return "master"; }
   get supportsCors() { return true; }
 
-  narrative(pathParts) {
-    return new CoreNarrative(this, pathParts);
+  async urlFor(path, method = 'GET') { // eslint-disable-line no-unused-vars
+    const baseUrl = path.endsWith(".md")
+      ? `https://raw.githubusercontent.com/${this.repo}/${await this.branch}/`
+      : await this.baseUrl();
+
+    const url = new URL(path, baseUrl);
+    return url.toString();
   }
 
   // The computation of these globals should move here.
@@ -243,14 +312,6 @@ class CoreStagingSource extends CoreSource {
   async baseUrl() { return "http://staging.nextstrain.org/"; }
   get repo() { return "nextstrain/narratives"; }
   get branch() { return "staging"; }
-}
-
-class CoreNarrative extends Narrative {
-  async url() {
-    const repoBaseUrl = `https://raw.githubusercontent.com/${this.source.repo}/${await this.source.branch}/`;
-    const url = new URL(this.baseName, repoBaseUrl);
-    return url.toString();
-  }
 }
 
 class CommunitySource extends Source {
@@ -420,8 +481,18 @@ class UrlDefinedSource extends Source {
 }
 
 class UrlDefinedDataset extends Dataset {
-  baseNameFor(type) {
-    const baseName = this.baseParts.join("/");
+  get baseName() {
+    return this.baseParts.join("/");
+  }
+  subresource(type) {
+    return new UrlDefinedDatasetSubResource(this, type);
+  }
+}
+
+class UrlDefinedDatasetSubResource extends DatasetSubResource {
+  get baseName() {
+    const type = this.type;
+    const baseName = this.resource.baseName;
 
     if (type === "main") {
       return baseName;
@@ -442,7 +513,7 @@ class UrlDefinedNarrative extends Narrative {
 
 class S3Source extends Source {
   get bucket() {
-    throw new InvalidSourceImplementation("bucket() must be implemented by subclasses");
+    throw "bucket() must be implemented by subclasses";
   }
   async baseUrl() {
     return `https://${this.bucket}.s3.amazonaws.com`;
@@ -570,19 +641,10 @@ class S3Source extends Source {
 }
 
 class PrivateS3Source extends S3Source {
-  dataset(pathParts) {
-    return new PrivateS3Dataset(this, pathParts);
-  }
-  narrative(pathParts) {
-    return new PrivateS3Narrative(this, pathParts);
-  }
   static visibleToUser(user) { // eslint-disable-line no-unused-vars
-    throw new InvalidSourceImplementation("visibleToUser() must be implemented explicitly by subclasses (not inherited from PrivateS3Source)");
+    throw "visibleToUser() must be implemented explicitly by subclasses (not inherited from PrivateS3Source)";
   }
-}
-
-class PrivateS3Dataset extends Dataset {
-  async urlFor(type, method = 'GET') {
+  async urlFor(path, method = 'GET') {
     const action = {
       "GET": "getObject",
       "HEAD": "headObject",
@@ -593,26 +655,8 @@ class PrivateS3Dataset extends Dataset {
     if (!action[method]) throw `Unsupported method: ${method}`
 
     return S3.getSignedUrl(action[method], {
-      Bucket: this.source.bucket,
-      Key: this.baseNameFor(type)
-    });
-  }
-}
-
-class PrivateS3Narrative extends Narrative {
-  async url(method = 'GET') {
-    const action = {
-      "GET": "getObject",
-      "HEAD": "headObject",
-      "PUT": "putObject",
-      "DELETE": "deleteObject",
-    };
-
-    if (!action[method]) throw `Unsupported method: ${method}`
-
-    return S3.getSignedUrl(action[method], {
-      Bucket: this.source.bucket,
-      Key: this.baseName
+      Bucket: this.bucket,
+      Key: path
     });
   }
 }

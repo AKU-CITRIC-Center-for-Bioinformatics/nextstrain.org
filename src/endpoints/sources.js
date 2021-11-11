@@ -134,9 +134,9 @@ const ifDatasetExists = async (req, res, next) => {
  * @param 
  * @returns {asyncExpressHandler}
  */
-const sendResource = resourceExtractor => async (req, res) => {
-  const resource = resourceExtractor(req);
-  const resourceUrl = await resource.url();
+const sendSubresource = subresourceExtractor => async (req, res) => {
+  const subresource = subresourceExtractor(req);
+  const subresourceUrl = await subresource.url();
 
   // XXX FIXME: for main, handle only meta + tree existing and combining them?
 
@@ -153,8 +153,8 @@ const sendResource = resourceExtractor => async (req, res) => {
    * tip the balance in favor of always proxying.
    *   -trs, 9 Nov 2021
    */
-  if (resource.supportsCors) {
-    return res.redirect(resourceUrl);
+  if (subresource.resource.source.supportsCors) {
+    return res.redirect(subresourceUrl);
   }
 
   /* Without upstream CORS support, we need to proxy the data through us:
@@ -165,9 +165,9 @@ const sendResource = resourceExtractor => async (req, res) => {
    * re-transferring the content if we have a cached copy that matches
    * upstream.
    */
-  return await proxyFetch(res, new Request(resourceUrl, {
+  return await proxyFetch(res, new Request(subresourceUrl, {
     headers: {
-      Accept: resource.accept,
+      Accept: subresource.accept,
     },
     cache: "no-cache",
   }));
@@ -175,7 +175,7 @@ const sendResource = resourceExtractor => async (req, res) => {
 
 
 const sendDatasetSubresource = type =>
-  sendResource(req => req.context.dataset.subresource(type));
+  sendSubresource(req => req.context.dataset.subresource(type));
 
 
 const getDatasetSubresource = type => contentTypesProvided([
@@ -206,7 +206,7 @@ const getDataset = contentTypesProvided([
 const putDatasetMainV2 = async (req, res) => {
   // XXX FIXME
   //    await req.context.dataset.put("main", req) ???
-  return res.redirect(307, await req.context.dataset.urlFor("main", "PUT"));
+  return res.redirect(307, await req.context.dataset.subresource("main").url("PUT"));
 };
 
 const putDatasetMain = contentTypesConsumed([
@@ -218,7 +218,7 @@ const putDatasetMain = contentTypesConsumed([
 const putDatasetRootSequenceVX = async (req, res) => {
   // XXX FIXME
   //    await req.context.dataset.put("main", req) ???
-  return res.redirect(307, await req.context.dataset.urlFor("root-sequence", "PUT"));
+  return res.redirect(307, await req.context.dataset.subresource("root-sequence").url("PUT"));
 };
 
 const putDatasetRootSequence = contentTypesProvided([
@@ -274,15 +274,19 @@ const ifNarrativeExists = async (req, res, next) => {
  * @returns {asyncExpressHandler}
  */
 const sendNarrativeSubresource = type =>
-  sendResource(req => req.context.narrative.subresource(type));
+  sendSubresource(req => req.context.narrative.subresource(type));
 
 
-const getNarrativeMarkdown = sendNarrativeSubresource("md");
+const getNarrativeMarkdown = contentTypesProvided([
+  ["text/vnd.nextstrain.narrative+markdown", sendNarrativeSubresource("md")],
+  ["text/markdown", sendNarrativeSubresource("md")],
+]);
 
 
 const getNarrative = contentTypesProvided([
   ["text/html", ifNarrativeExists, sendAuspiceEntrypoint],
   ["text/markdown", getNarrativeMarkdown],
+  ["text/vnd.nextstrain.narrative+markdown", getNarrativeMarkdown],
 ]);
 
 
